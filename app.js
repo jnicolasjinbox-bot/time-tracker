@@ -1,44 +1,49 @@
-// ====== DATA LAYER ======
+// ====== DATA ======
 const DB = {
-  get(key, def) { try { return JSON.parse(localStorage.getItem('gt_'+key)) || def; } catch { return def; } },
-  set(key, val) { localStorage.setItem('gt_'+key, JSON.stringify(val)); }
+  get(k, d) { try { return JSON.parse(localStorage.getItem('gt_'+k)) || d } catch { return d } },
+  set(k, v) { localStorage.setItem('gt_'+k, JSON.stringify(v)) }
 };
 
 let tasks = DB.get('tasks', []);
 let goals = DB.get('goals', []);
 let blocks = DB.get('blocks', []);
 let settings = DB.get('settings', {
-  workStart: '06:00', workEnd: '17:00',
-  workDays: [1,2,3,4,5],
+  workStart: '06:00', workEnd: '17:00', workDays: [1,2,3,4,5],
   categories: [
-    { name: 'Startup', color: '#6C5CE7' },
-    { name: 'Fitness', color: '#e74c3c' },
-    { name: 'Personal', color: '#f39c12' },
-    { name: 'Learning', color: '#3498db' }
+    { name: 'Startup', color: '#7c6cf0' },
+    { name: 'Fitness', color: '#ff6b6b' },
+    { name: 'Personal', color: '#ffd43b' },
+    { name: 'Learning', color: '#4dabf7' }
   ]
 });
 
-function save() {
-  DB.set('tasks', tasks);
-  DB.set('goals', goals);
-  DB.set('blocks', blocks);
-  DB.set('settings', settings);
-}
-
-// ====== UTILS ======
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
-function today() { return new Date().toISOString().slice(0,10); }
-function dayName(d) { return new Date(d+'T12:00').toLocaleDateString('en', {weekday:'short', month:'short', day:'numeric'}); }
-function catColor(name) { const c = settings.categories.find(c=>c.name===name); return c ? c.color : '#888'; }
-function daysUntil(d) { return Math.ceil((new Date(d+'T23:59') - new Date()) / 86400000); }
+const save = () => { DB.set('tasks',tasks); DB.set('goals',goals); DB.set('blocks',blocks); DB.set('settings',settings); };
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+const today = () => new Date().toISOString().slice(0,10);
+const catColor = n => (settings.categories.find(c=>c.name===n)||{}).color || '#666';
+const daysUntil = d => Math.ceil((new Date(d+'T23:59') - new Date()) / 86400000);
 
 function startOfWeek() {
-  const d = new Date(); d.setHours(0,0,0,0);
-  d.setDate(d.getDate() - d.getDay());
+  const d = new Date(); d.setHours(0,0,0,0); d.setDate(d.getDate()-d.getDay());
   return d.toISOString().slice(0,10);
 }
 
-// ====== NAVIGATION ======
+function formatDate(d) {
+  const dt = new Date(d+'T12:00');
+  const t = new Date(); t.setHours(12,0,0,0);
+  const diff = Math.round((dt-t)/86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Tomorrow';
+  if (diff === -1) return 'Yesterday';
+  return dt.toLocaleDateString('en', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+function formatHour(h) {
+  if (h === 0 || h === 12) return (h===0?'12':'12') + (h<12?' AM':' PM');
+  return (h>12?h-12:h) + (h>=12?' PM':' AM');
+}
+
+// ====== NAV ======
 let currentPage = 'dashboard';
 let plannerDate = today();
 
@@ -49,17 +54,15 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.classList.add('active');
     document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
     document.getElementById('page-'+currentPage).classList.add('active');
-    document.getElementById('page-title').textContent = 
-      {dashboard:'Dashboard',tasks:'Tasks',goals:'Goals',planner:'Planner',settings:'Settings'}[currentPage];
+    document.getElementById('page-title').textContent =
+      { dashboard:'Dashboard', tasks:'Tasks', goals:'Goals', planner:'Planner', settings:'Settings' }[currentPage];
+    document.getElementById('main').scrollTop = 0;
     refresh();
   });
 });
 
 function handleAdd() {
-  if (currentPage === 'tasks') openTaskModal();
-  else if (currentPage === 'goals') openGoalModal();
-  else if (currentPage === 'planner') openBlockModal();
-  else openTaskModal();
+  ({ tasks: openTaskModal, goals: openGoalModal, planner: openBlockModal }[currentPage] || openTaskModal)();
 }
 
 // ====== MODAL ======
@@ -70,32 +73,34 @@ function openModal(title, html) {
 }
 function closeModal() { document.getElementById('modal-overlay').classList.remove('open'); }
 
-function catOptions(selected) {
-  return settings.categories.map(c =>
-    `<option value="${c.name}" ${c.name===selected?'selected':''}>${c.name}</option>`
-  ).join('');
-}
-
-function goalOptions(selected) {
-  return `<option value="">None</option>` +
-    goals.map(g => `<option value="${g.id}" ${g.id===selected?'selected':''}>${g.title}</option>`).join('');
-}
+const catOpts = sel => settings.categories.map(c =>
+  `<option value="${c.name}" ${c.name===sel?'selected':''}>${c.name}</option>`).join('');
+const goalOpts = sel => `<option value="">None</option>` +
+  goals.map(g=>`<option value="${g.id}" ${g.id===sel?'selected':''}>${g.title}</option>`).join('');
 
 // ====== TASKS ======
+let taskFilter = 'all';
+let taskStatus = 'active';
+
 function openTaskModal(task) {
   const t = task || { title:'', category:'Startup', priority:'Medium', estimated:'', deadline:'', notes:'', goalId:'' };
   openModal(task ? 'Edit Task' : 'New Task', `
-    <div class="form-group"><label>Title</label><input id="f-title" value="${t.title}"></div>
-    <div class="form-group"><label>Category</label><select id="f-cat">${catOptions(t.category)}</select></div>
-    <div class="form-group"><label>Priority</label><select id="f-pri">
-      ${['High','Medium','Low'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}
-    </select></div>
-    <div class="form-group"><label>Estimated Hours</label><input id="f-est" type="number" step="0.5" min="0" value="${t.estimated||''}"></div>
-    <div class="form-group"><label>Deadline</label><input id="f-dead" type="date" value="${t.deadline||''}"></div>
-    <div class="form-group"><label>Goal</label><select id="f-goal">${goalOptions(t.goalId)}</select></div>
-    <div class="form-group"><label>Notes</label><textarea id="f-notes">${t.notes||''}</textarea></div>
+    <div class="form-group"><label>Title</label><input class="form-input" id="f-title" value="${t.title}" placeholder="What needs doing?"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Category</label><select class="form-input" id="f-cat">${catOpts(t.category)}</select></div>
+      <div class="form-group"><label>Priority</label><select class="form-input" id="f-pri">
+        ${['High','Medium','Low'].map(p=>`<option ${p===t.priority?'selected':''}>${p}</option>`).join('')}
+      </select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>Estimated Hours</label><input class="form-input" id="f-est" type="number" step="0.5" min="0" value="${t.estimated||''}" placeholder="e.g. 2"></div>
+      <div class="form-group"><label>Deadline</label><input class="form-input" id="f-dead" type="date" value="${t.deadline||''}"></div>
+    </div>
+    <div class="form-group"><label>Goal</label><select class="form-input" id="f-goal">${goalOpts(t.goalId)}</select></div>
+    <div class="form-group"><label>Notes</label><textarea class="form-input" id="f-notes" placeholder="Optional details...">${t.notes||''}</textarea></div>
     <button class="form-submit" onclick="saveTask('${task?task.id:''}')">${task?'Update':'Create'} Task</button>
   `);
+  setTimeout(() => document.getElementById('f-title').focus(), 100);
 }
 
 function saveTask(id) {
@@ -109,61 +114,81 @@ function saveTask(id) {
     notes: document.getElementById('f-notes').value.trim()
   };
   if (!data.title) return;
-  if (id) {
-    const t = tasks.find(t=>t.id===id);
-    Object.assign(t, data);
-  } else {
-    tasks.push({ id: uid(), ...data, completed: false, completedDate: null, createdDate: today() });
-  }
+  if (id) { Object.assign(tasks.find(t=>t.id===id), data); }
+  else { tasks.push({ id: uid(), ...data, completed: false, completedDate: null, createdDate: today() }); }
   save(); closeModal(); refresh();
 }
 
 function toggleTask(id) {
   const t = tasks.find(t=>t.id===id);
-  t.completed = !t.completed;
-  t.completedDate = t.completed ? today() : null;
-  save(); refresh();
+  const el = document.querySelector(`[data-task="${id}"]`);
+  if (!t.completed && el) {
+    el.classList.add('completing');
+    setTimeout(() => {
+      t.completed = true; t.completedDate = today();
+      save(); refresh();
+    }, 500);
+  } else {
+    t.completed = !t.completed;
+    t.completedDate = t.completed ? today() : null;
+    save(); refresh();
+  }
 }
 
-function deleteTask(id) {
-  tasks = tasks.filter(t=>t.id!==id);
-  save(); refresh();
-}
+function deleteTask(id) { tasks = tasks.filter(t=>t.id!==id); save(); refresh(); }
 
 function renderTasks() {
-  const cat = document.getElementById('task-filter-cat').value;
-  const status = document.getElementById('task-filter-status').value;
+  // Render filter chips
+  const chipRow = document.getElementById('task-chips');
+  const cats = ['all', ...settings.categories.map(c=>c.name)];
+  chipRow.innerHTML = cats.map(c =>
+    `<button class="chip ${taskFilter===c?'active':''}" onclick="taskFilter='${c}';renderTasks()">${c==='all'?'All':c}</button>`
+  ).join('') +
+    `<button class="chip ${taskStatus==='active'?'active':''}" onclick="taskStatus=taskStatus==='active'?'completed':'active';renderTasks()" style="margin-left:auto">${taskStatus==='active'?'Active':'Done'}</button>`;
+
   let filtered = tasks.filter(t => {
-    if (cat !== 'all' && t.category !== cat) return false;
-    if (status === 'active' && t.completed) return false;
-    if (status === 'completed' && !t.completed) return false;
+    if (taskFilter !== 'all' && t.category !== taskFilter) return false;
+    if (taskStatus === 'active' && t.completed) return false;
+    if (taskStatus === 'completed' && !t.completed) return false;
     return true;
   });
-  // Sort: high priority first, then by deadline
-  const priOrder = {High:0, Medium:1, Low:2};
-  filtered.sort((a,b) => priOrder[a.priority] - priOrder[b.priority] || (a.deadline||'z').localeCompare(b.deadline||'z'));
+
+  const priOrd = { High: 0, Medium: 1, Low: 2 };
+  filtered.sort((a,b) => priOrd[a.priority] - priOrd[b.priority] || (a.deadline||'z').localeCompare(b.deadline||'z'));
 
   const el = document.getElementById('task-list');
   if (!filtered.length) {
-    el.innerHTML = '<div class="empty-state"><div class="emoji">📋</div>No tasks yet</div>';
+    el.innerHTML = `<div class="empty"><div class="empty-icon">${taskStatus==='completed'?'🎉':'📋'}</div><div class="empty-text">${taskStatus==='completed'?'No completed tasks yet':'No tasks — tap + to add one'}</div></div>`;
     return;
   }
-  el.innerHTML = filtered.map(t => `
-    <div class="card task-row ${t.completed?'completed':''}">
-      <button class="task-check ${t.completed?'checked':''}" onclick="toggleTask('${t.id}')">✓</button>
-      <div style="flex:1;min-width:0">
-        <div class="card-title">${t.title}</div>
-        <div class="card-meta">
-          <span class="cat-badge" style="background:${catColor(t.category)}">${t.category}</span>
-          <span>${t.priority}</span>
-          ${t.estimated ? `<span>${t.estimated}h</span>` : ''}
-          ${t.deadline ? `<span>Due ${t.deadline}</span>` : ''}
-        </div>
-      </div>
-      <div class="card-actions">
-        <button onclick="openTaskModal(tasks.find(t=>t.id==='${t.id}'))">✏️</button>
-        <button onclick="deleteTask('${t.id}')">🗑</button>
-      </div>
+
+  // Group by priority
+  const groups = {};
+  filtered.forEach(t => {
+    const g = t.completed ? 'Completed' : t.priority;
+    (groups[g] = groups[g] || []).push(t);
+  });
+
+  el.innerHTML = Object.entries(groups).map(([group, items]) => `
+    <div class="task-group">
+      <div class="task-group-title">${group} <span class="task-group-count">${items.length}</span></div>
+      ${items.map(t => {
+        const overdue = t.deadline && !t.completed && daysUntil(t.deadline) < 0;
+        return `<div class="task-item ${t.completed?'done':''}" data-task="${t.id}">
+          <button class="check-circle ${t.completed?'checked':''}" onclick="toggleTask('${t.id}')"></button>
+          <div class="task-content" onclick="openTaskModal(tasks.find(x=>x.id==='${t.id}'))">
+            <div class="task-title">${t.title}</div>
+            <div class="task-detail">
+              <span class="task-tag" style="background:${catColor(t.category)}">${t.category}</span>
+              ${t.deadline ? `<span class="task-due ${overdue?'overdue':''}">${overdue?'Overdue':formatDate(t.deadline)}</span>` : ''}
+              ${t.estimated ? `<span class="task-est">${t.estimated}h</span>` : ''}
+            </div>
+          </div>
+          <div class="task-actions">
+            <button class="task-action-btn" onclick="deleteTask('${t.id}')">✕</button>
+          </div>
+        </div>`;
+      }).join('')}
     </div>
   `).join('');
 }
@@ -172,10 +197,12 @@ function renderTasks() {
 function openGoalModal(goal) {
   const g = goal || { title:'', description:'', targetDate:'', category:'Startup' };
   openModal(goal ? 'Edit Goal' : 'New Goal', `
-    <div class="form-group"><label>Title</label><input id="f-gtitle" value="${g.title}"></div>
-    <div class="form-group"><label>Category</label><select id="f-gcat">${catOptions(g.category)}</select></div>
-    <div class="form-group"><label>Target Date</label><input id="f-gdate" type="date" value="${g.targetDate||''}"></div>
-    <div class="form-group"><label>Description</label><textarea id="f-gdesc">${g.description||''}</textarea></div>
+    <div class="form-group"><label>Title</label><input class="form-input" id="f-gtitle" value="${g.title}" placeholder="What's the goal?"></div>
+    <div class="form-row">
+      <div class="form-group"><label>Category</label><select class="form-input" id="f-gcat">${catOpts(g.category)}</select></div>
+      <div class="form-group"><label>Target Date</label><input class="form-input" id="f-gdate" type="date" value="${g.targetDate||''}"></div>
+    </div>
+    <div class="form-group"><label>Description</label><textarea class="form-input" id="f-gdesc" placeholder="What does success look like?">${g.description||''}</textarea></div>
     <button class="form-submit" onclick="saveGoal('${goal?goal.id:''}')">${goal?'Update':'Create'} Goal</button>
   `);
 }
@@ -188,25 +215,21 @@ function saveGoal(id) {
     description: document.getElementById('f-gdesc').value.trim()
   };
   if (!data.title) return;
-  if (id) {
-    Object.assign(goals.find(g=>g.id===id), data);
-  } else {
-    goals.push({ id: uid(), ...data, createdDate: today() });
-  }
+  if (id) { Object.assign(goals.find(g=>g.id===id), data); }
+  else { goals.push({ id: uid(), ...data, createdDate: today() }); }
   save(); closeModal(); refresh();
 }
 
 function deleteGoal(id) {
   goals = goals.filter(g=>g.id!==id);
-  // Unlink tasks
-  tasks.forEach(t => { if (t.goalId===id) t.goalId=''; });
+  tasks.forEach(t => { if(t.goalId===id) t.goalId=''; });
   save(); refresh();
 }
 
 function renderGoals() {
   const el = document.getElementById('goal-list');
   if (!goals.length) {
-    el.innerHTML = '<div class="empty-state"><div class="emoji">🎯</div>No goals yet</div>';
+    el.innerHTML = '<div class="empty"><div class="empty-icon">🎯</div><div class="empty-text">No goals yet — set your first target</div></div>';
     return;
   }
   el.innerHTML = goals.map(g => {
@@ -215,192 +238,240 @@ function renderGoals() {
     const pct = linked.length ? Math.round(done/linked.length*100) : 0;
     const remaining = linked.filter(t=>!t.completed);
     return `
-      <div class="card">
-        <div class="card-actions">
-          <button onclick="openGoalModal(goals.find(g=>g.id==='${g.id}'))">✏️</button>
-          <button onclick="deleteGoal('${g.id}')">🗑</button>
+      <div class="goal-card" onclick="openGoalModal(goals.find(x=>x.id==='${g.id}'))">
+        <div class="goal-header">
+          <div>
+            <div class="goal-title">${g.title}</div>
+            <div class="goal-meta">
+              <span class="task-tag" style="background:${catColor(g.category)}">${g.category}</span>
+              ${g.targetDate ? `<span>${formatDate(g.targetDate)}</span>` : ''}
+              <span>${done}/${linked.length} tasks</span>
+            </div>
+          </div>
+          <div class="goal-pct" style="color:${catColor(g.category)}">${pct}%</div>
         </div>
-        <div class="card-title">${g.title}</div>
-        <div class="card-meta">
-          <span class="cat-badge" style="background:${catColor(g.category)}">${g.category}</span>
-          ${g.targetDate ? `<span>Target: ${g.targetDate}</span>` : ''}
-          <span>${done}/${linked.length} tasks</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${catColor(g.category)}"></div></div>
-        <div class="progress-text">${pct}% complete</div>
-        ${remaining.length ? `<div style="margin-top:8px;font-size:12px;color:var(--text2)">
-          Remaining: ${remaining.map(t=>t.title).join(', ')}
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${catColor(g.category)}"></div></div>
+        ${remaining.length ? `<div class="goal-remaining">
+          <div class="goal-remaining-title">Remaining</div>
+          ${remaining.slice(0,4).map(t=>`<div class="goal-remaining-item">${t.title}</div>`).join('')}
+          ${remaining.length>4?`<div class="goal-remaining-item" style="color:var(--text2)">+${remaining.length-4} more</div>`:''}
         </div>` : ''}
-      </div>
-    `;
-  }).join('');
-}
-
-function renderGoalsDashboard() {
-  const el = document.getElementById('dashboard-goals');
-  if (!goals.length) { el.innerHTML = '<div style="color:var(--text2);font-size:13px">No goals yet — create one!</div>'; return; }
-  el.innerHTML = goals.map(g => {
-    const linked = tasks.filter(t=>t.goalId===g.id);
-    const done = linked.filter(t=>t.completed).length;
-    const pct = linked.length ? Math.round(done/linked.length*100) : 0;
-    return `
-      <div class="card" style="padding:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <span class="card-title" style="font-size:14px">${g.title}</span>
-          <span style="font-size:13px;font-weight:600;color:${catColor(g.category)}">${pct}%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%;background:${catColor(g.category)}"></div></div>
-      </div>
-    `;
+        <button class="task-action-btn" style="position:absolute;top:16px;right:16px" onclick="event.stopPropagation();deleteGoal('${g.id}')">✕</button>
+      </div>`;
   }).join('');
 }
 
 // ====== PLANNER ======
-function changeDate(delta) {
-  const d = new Date(plannerDate+'T12:00');
-  d.setDate(d.getDate()+delta);
-  plannerDate = d.toISOString().slice(0,10);
+function changeDate(d) {
+  const dt = new Date(plannerDate+'T12:00');
+  dt.setDate(dt.getDate()+d);
+  plannerDate = dt.toISOString().slice(0,10);
   renderPlanner();
 }
 
-function isWorkHour(hour) {
+function goToday() { plannerDate = today(); renderPlanner(); }
+
+function isWorkHour(h) {
   const d = new Date(plannerDate+'T12:00').getDay();
   if (!settings.workDays.includes(d)) return false;
-  const start = parseInt(settings.workStart.split(':')[0]);
-  const end = parseInt(settings.workEnd.split(':')[0]);
-  return hour >= start && hour < end;
+  return h >= parseInt(settings.workStart) && h < parseInt(settings.workEnd);
 }
 
 function openBlockModal(hour) {
   const h = hour !== undefined ? hour : new Date().getHours();
-  openModal('New Time Block', `
-    <div class="form-group"><label>Start</label><input id="f-bstart" type="time" value="${String(h).padStart(2,'0')}:00"></div>
-    <div class="form-group"><label>End</label><input id="f-bend" type="time" value="${String(h+1).padStart(2,'0')}:00"></div>
-    <div class="form-group"><label>Category</label><select id="f-bcat">${catOptions('Startup')}</select></div>
-    <div class="form-group"><label>Task (optional)</label><select id="f-btask">
-      <option value="">None</option>
+  openModal('Add Time Block', `
+    <div class="form-row">
+      <div class="form-group"><label>Start</label><input class="form-input" id="f-bstart" type="time" value="${String(h).padStart(2,'0')}:00"></div>
+      <div class="form-group"><label>End</label><input class="form-input" id="f-bend" type="time" value="${String(Math.min(h+1,23)).padStart(2,'0')}:00"></div>
+    </div>
+    <div class="form-group"><label>Category</label><select class="form-input" id="f-bcat">${catOpts('Startup')}</select></div>
+    <div class="form-group"><label>Task</label><select class="form-input" id="f-btask">
+      <option value="">No specific task</option>
       ${tasks.filter(t=>!t.completed).map(t=>`<option value="${t.id}">${t.title}</option>`).join('')}
     </select></div>
-    <div class="form-group"><label>Label</label><input id="f-blabel" placeholder="What are you doing?"></div>
+    <div class="form-group"><label>Label</label><input class="form-input" id="f-blabel" placeholder="What are you working on?"></div>
     <button class="form-submit" onclick="saveBlock()">Add Block</button>
   `);
 }
 
 function saveBlock() {
   const b = {
-    id: uid(),
-    date: plannerDate,
+    id: uid(), date: plannerDate,
     start: document.getElementById('f-bstart').value,
     end: document.getElementById('f-bend').value,
     category: document.getElementById('f-bcat').value,
     taskId: document.getElementById('f-btask').value,
-    label: document.getElementById('f-blabel').value.trim() ||
-           document.getElementById('f-bcat').value
+    label: document.getElementById('f-blabel').value.trim() || document.getElementById('f-bcat').value
   };
-  blocks.push(b);
-  save(); closeModal(); refresh();
+  blocks.push(b); save(); closeModal(); refresh();
 }
 
-function deleteBlock(id) {
-  blocks = blocks.filter(b=>b.id!==id);
-  save(); refresh();
-}
+function deleteBlock(id) { blocks = blocks.filter(b=>b.id!==id); save(); refresh(); }
 
 function renderPlanner() {
-  document.getElementById('planner-date').textContent = dayName(plannerDate);
+  const nav = document.getElementById('planner-nav');
+  const dt = new Date(plannerDate+'T12:00');
+  const isToday = plannerDate === today();
+  nav.innerHTML = `
+    <button class="nav-arrow" onclick="changeDate(-1)">‹</button>
+    <div style="text-align:center">
+      <div class="date-text">${dt.toLocaleDateString('en',{weekday:'long'})}</div>
+      <div class="date-sub">${dt.toLocaleDateString('en',{month:'long',day:'numeric',year:'numeric'})}</div>
+    </div>
+    <button class="nav-arrow" onclick="changeDate(1)">›</button>
+  `;
+
+  const todayBtn = document.getElementById('planner-today');
+  todayBtn.style.display = isToday ? 'none' : 'block';
+
   const grid = document.getElementById('planner-grid');
   const dayBlocks = blocks.filter(b=>b.date===plannerDate);
+  const now = new Date();
+  const nowHour = now.getHours() + now.getMinutes()/60;
+
   let html = '';
   for (let h = 5; h <= 23; h++) {
-    const hStr = String(h).padStart(2,'0');
-    const isWork = isWorkHour(h);
-    const hourBlocks = dayBlocks.filter(b => {
-      const bh = parseInt(b.start.split(':')[0]);
-      return bh === h;
-    });
-    html += `<div class="planner-hour">
-      <div class="planner-time">${h>12?h-12:h}${h>=12?'pm':'am'}</div>
-      <div class="planner-slot ${isWork?'work-hour':''}" ${!isWork?`onclick="openBlockModal(${h})"`:''}>
-        ${hourBlocks.map(b => `
-          <div class="planner-block" style="background:${catColor(b.category)}" onclick="event.stopPropagation();deleteBlock('${b.id}')">
-            ${b.label} ${b.start}-${b.end}
+    const work = isWorkHour(h);
+    const hBlocks = dayBlocks.filter(b => parseInt(b.start) === h);
+
+    html += `<div class="time-row">
+      <div class="time-label">${formatHour(h)}</div>
+      <div class="time-slot ${work?'work':''}" ${!work?`onclick="openBlockModal(${h})"`:''}>
+        ${work ? '<span class="work-label">Work</span>' : ''}
+        ${hBlocks.map(b => `
+          <div class="time-block" style="background:${catColor(b.category)}" onclick="event.stopPropagation();deleteBlock('${b.id}')">
+            ${b.label}
+            <div class="block-time">${b.start} – ${b.end}</div>
           </div>
         `).join('')}
       </div>
     </div>`;
+
+    // Now indicator
+    if (isToday && h === Math.floor(nowHour)) {
+      const pct = (nowHour - h) * 100;
+      html += `<div class="now-line" style="top:${pct}%;margin-top:-1px;position:relative;"></div>`;
+    }
   }
   grid.innerHTML = html;
 }
 
 // ====== DASHBOARD ======
+function getProductiveHours(date) {
+  return blocks.filter(b=>b.date===date).reduce((sum,b) => {
+    const s = parseInt(b.start.split(':')[0]) + parseInt(b.start.split(':')[1]||0)/60;
+    const e = parseInt(b.end.split(':')[0]) + parseInt(b.end.split(':')[1]||0)/60;
+    return sum + Math.max(0, e-s);
+  }, 0);
+}
+
 function getStreak() {
   let streak = 0;
   const d = new Date(); d.setHours(0,0,0,0);
+  // Don't count today unless they already have 2+ hours
+  if (getProductiveHours(today()) < 2) d.setDate(d.getDate()-1);
   while (true) {
     const ds = d.toISOString().slice(0,10);
-    const dayBlocks = blocks.filter(b=>b.date===ds);
-    const hours = dayBlocks.reduce((sum,b) => {
-      const s = parseInt(b.start.split(':')[0]);
-      const e = parseInt(b.end.split(':')[0]);
-      return sum + (e - s);
-    }, 0);
-    if (hours >= 2) { streak++; d.setDate(d.getDate()-1); }
-    else if (ds === today() && hours < 2) { d.setDate(d.getDate()-1); } // today might not be done yet
+    if (getProductiveHours(ds) >= 2) { streak++; d.setDate(d.getDate()-1); }
     else break;
   }
   return streak;
 }
 
-function getProductiveHours(date) {
-  return blocks.filter(b=>b.date===date).reduce((sum,b) => {
-    const s = parseInt(b.start.split(':')[0]) + parseInt(b.start.split(':')[1]||0)/60;
-    const e = parseInt(b.end.split(':')[0]) + parseInt(b.end.split(':')[1]||0)/60;
-    return sum + Math.max(0, e - s);
-  }, 0);
+function renderHeatmap() {
+  const el = document.getElementById('heatmap');
+  const d = new Date(); d.setHours(12,0,0,0);
+  // Show last 5 weeks (35 days)
+  d.setDate(d.getDate() - 34);
+  // Align to Sunday
+  d.setDate(d.getDate() - d.getDay());
+
+  let days = [];
+  for (let i = 0; i < 35; i++) {
+    const ds = d.toISOString().slice(0,10);
+    const hrs = getProductiveHours(ds);
+    const completed = tasks.filter(t=>t.completed && t.completedDate===ds).length;
+    days.push({ date: ds, hrs, completed, day: d.getDate() });
+    d.setDate(d.getDate()+1);
+  }
+
+  const maxHrs = Math.max(4, ...days.map(d=>d.hrs));
+
+  el.innerHTML = `
+    <div class="heatmap-labels">${['S','M','T','W','T','F','S'].map(d=>`<span>${d}</span>`).join('')}</div>
+    <div class="heatmap-grid">
+      ${days.map(d => {
+        const intensity = d.hrs > 0 ? 0.2 + (d.hrs/maxHrs)*0.8 : 0;
+        const bg = d.date > today() ? 'var(--surface)' :
+                   intensity > 0 ? `rgba(124,108,240,${intensity})` : 'var(--surface2)';
+        return `<div class="heatmap-day" style="background:${bg}" title="${d.date}: ${d.hrs.toFixed(1)}h, ${d.completed} tasks">
+          <span class="day-num">${d.day}</span>
+        </div>`;
+      }).join('')}
+    </div>
+  `;
 }
 
 function renderDashboard() {
-  const todayTasks = tasks.filter(t=>t.completed && t.completedDate===today()).length;
-  const weekStart = startOfWeek();
-  const weekTasks = tasks.filter(t=>t.completed && t.completedDate >= weekStart).length;
-  const todayHours = getProductiveHours(today());
+  const todayDone = tasks.filter(t=>t.completed && t.completedDate===today()).length;
+  const weekDone = tasks.filter(t=>t.completed && t.completedDate>=startOfWeek()).length;
+  const hrs = getProductiveHours(today());
   const streak = getStreak();
 
-  document.getElementById('stat-today-tasks').textContent = todayTasks;
-  document.getElementById('stat-week-tasks').textContent = weekTasks;
-  document.getElementById('stat-today-time').textContent = todayHours >= 1 ? `${Math.round(todayHours*10)/10}h` : `${Math.round(todayHours*60)}m`;
-  document.getElementById('stat-streak').textContent = streak + '🔥';
+  document.getElementById('stat-tasks').textContent = todayDone;
+  document.getElementById('stat-time').textContent = hrs >= 1 ? `${Math.round(hrs*10)/10}h` : `${Math.round(hrs*60)}m`;
+  document.getElementById('stat-week').textContent = weekDone;
+  document.getElementById('stat-streak').textContent = streak;
 
-  renderGoalsDashboard();
+  renderHeatmap();
 
-  // Today's schedule
+  // Goals
+  const goalsEl = document.getElementById('dash-goals');
+  if (!goals.length) {
+    goalsEl.innerHTML = '<div style="color:var(--text2);font-size:13px;padding:8px 0">No goals yet</div>';
+  } else {
+    goalsEl.innerHTML = goals.map(g => {
+      const linked = tasks.filter(t=>t.goalId===g.id);
+      const done = linked.filter(t=>t.completed).length;
+      const pct = linked.length ? Math.round(done/linked.length*100) : 0;
+      return `<div style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+          <span style="font-size:14px;font-weight:500">${g.title}</span>
+          <span style="font-size:13px;font-weight:700;color:${catColor(g.category)}">${pct}%</span>
+        </div>
+        <div class="progress-track"><div class="progress-fill" style="width:${pct}%;background:${catColor(g.category)}"></div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // Schedule
+  const schedEl = document.getElementById('dash-schedule');
   const todayBlocks = blocks.filter(b=>b.date===today()).sort((a,b)=>a.start.localeCompare(b.start));
-  const schedEl = document.getElementById('dashboard-schedule');
   if (!todayBlocks.length) {
-    schedEl.innerHTML = '<div style="color:var(--text2);font-size:13px">No blocks planned — hit the planner!</div>';
+    schedEl.innerHTML = '<div style="color:var(--text2);font-size:13px;padding:8px 0">Nothing planned — open the planner</div>';
   } else {
     schedEl.innerHTML = todayBlocks.map(b => `
-      <div style="display:flex;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
-        <div style="width:8px;height:8px;border-radius:50%;background:${catColor(b.category)};flex-shrink:0"></div>
-        <span style="font-size:13px;color:var(--text2);width:90px">${b.start} - ${b.end}</span>
-        <span style="font-size:14px">${b.label}</span>
+      <div class="schedule-item">
+        <div class="schedule-dot" style="background:${catColor(b.category)}"></div>
+        <span class="schedule-time">${b.start} – ${b.end}</span>
+        <span class="schedule-label">${b.label}</span>
       </div>
     `).join('');
   }
 
   // Deadlines
+  const deadEl = document.getElementById('dash-deadlines');
   const upcoming = tasks.filter(t=>!t.completed && t.deadline).sort((a,b)=>a.deadline.localeCompare(b.deadline)).slice(0,5);
-  const deadEl = document.getElementById('dashboard-deadlines');
   if (!upcoming.length) {
-    deadEl.innerHTML = '<div style="color:var(--text2);font-size:13px">No upcoming deadlines</div>';
+    deadEl.innerHTML = '<div style="color:var(--text2);font-size:13px;padding:8px 0">No upcoming deadlines</div>';
   } else {
     deadEl.innerHTML = upcoming.map(t => {
-      const days = daysUntil(t.deadline);
-      const cls = days <= 1 ? 'urgent' : days <= 3 ? 'soon' : '';
-      const label = days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `${days} days`;
-      return `<div class="deadline-item">
-        <span style="font-size:14px">${t.title}</span>
-        <span class="deadline-days ${cls}">${label}</span>
+      const d = daysUntil(t.deadline);
+      const cls = d <= 1 ? 'urgent' : d <= 3 ? 'soon' : 'normal';
+      const label = d < 0 ? 'Overdue' : d === 0 ? 'Today' : d === 1 ? 'Tomorrow' : `${d} days`;
+      return `<div class="deadline-row">
+        <span class="deadline-name">${t.title}</span>
+        <span class="deadline-tag ${cls}">${label}</span>
       </div>`;
     }).join('');
   }
@@ -413,34 +484,9 @@ function saveSettings() {
   save();
 }
 
-function renderSettings() {
-  document.getElementById('work-start').value = settings.workStart;
-  document.getElementById('work-end').value = settings.workEnd;
-
-  const dayNames = ['S','M','T','W','T','F','S'];
-  document.getElementById('work-days').innerHTML = dayNames.map((d,i) =>
-    `<button class="day-btn ${settings.workDays.includes(i)?'active':''}" onclick="toggleWorkDay(${i})">${d}</button>`
-  ).join('');
-
-  document.getElementById('category-list').innerHTML = settings.categories.map((c,i) =>
-    `<div class="cat-row">
-      <div class="cat-swatch" style="background:${c.color}"></div>
-      <span class="cat-name">${c.name}</span>
-      <button class="cat-del" onclick="removeCategory(${i})">×</button>
-    </div>`
-  ).join('');
-
-  // Update task filter
-  const filterCat = document.getElementById('task-filter-cat');
-  const val = filterCat.value;
-  filterCat.innerHTML = `<option value="all">All Categories</option>` +
-    settings.categories.map(c=>`<option value="${c.name}">${c.name}</option>`).join('');
-  filterCat.value = val;
-}
-
 function toggleWorkDay(d) {
   const i = settings.workDays.indexOf(d);
-  if (i >= 0) settings.workDays.splice(i,1); else settings.workDays.push(d);
+  if (i>=0) settings.workDays.splice(i,1); else settings.workDays.push(d);
   save(); renderSettings();
 }
 
@@ -453,51 +499,51 @@ function addCategory() {
   save(); renderSettings();
 }
 
-function removeCategory(i) {
-  settings.categories.splice(i,1);
-  save(); renderSettings();
-}
+function removeCategory(i) { settings.categories.splice(i,1); save(); renderSettings(); }
 
 function exportData() {
   const data = JSON.stringify({ tasks, goals, blocks, settings }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'grindtime-backup-' + today() + '.json';
-  a.click();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'grindtime-'+today()+'.json'; a.click();
 }
 
 function importData(e) {
   const file = e.target.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
+  const r = new FileReader();
+  r.onload = () => {
     try {
-      const data = JSON.parse(reader.result);
-      if (data.tasks) tasks = data.tasks;
-      if (data.goals) goals = data.goals;
-      if (data.blocks) blocks = data.blocks;
-      if (data.settings) settings = data.settings;
-      save(); refresh();
-      alert('Data imported!');
+      const d = JSON.parse(r.result);
+      if (d.tasks) tasks=d.tasks; if (d.goals) goals=d.goals;
+      if (d.blocks) blocks=d.blocks; if (d.settings) settings=d.settings;
+      save(); refresh(); alert('Imported!');
     } catch { alert('Invalid file'); }
   };
-  reader.readAsText(file);
+  r.readAsText(file);
 }
 
 function clearAllData() {
-  if (!confirm('Delete ALL data? This cannot be undone.')) return;
-  tasks = []; goals = []; blocks = [];
-  save(); refresh();
+  if (!confirm('Delete ALL data? Cannot be undone.')) return;
+  tasks=[]; goals=[]; blocks=[]; save(); refresh();
+}
+
+function renderSettings() {
+  document.getElementById('work-start').value = settings.workStart;
+  document.getElementById('work-end').value = settings.workEnd;
+
+  const dayNames = ['S','M','T','W','T','F','S'];
+  document.getElementById('work-days').innerHTML = dayNames.map((d,i) =>
+    `<button class="day-pill ${settings.workDays.includes(i)?'active':''}" onclick="toggleWorkDay(${i})">${d}</button>`
+  ).join('');
+
+  document.getElementById('cat-list').innerHTML = settings.categories.map((c,i) =>
+    `<div class="cat-item"><div class="cat-dot" style="background:${c.color}"></div><span>${c.name}</span><button class="cat-del" onclick="removeCategory(${i})">✕</button></div>`
+  ).join('');
 }
 
 // ====== REFRESH ======
 function refresh() {
-  renderDashboard();
-  renderTasks();
-  renderGoals();
-  renderPlanner();
-  renderSettings();
+  renderDashboard(); renderTasks(); renderGoals(); renderPlanner(); renderSettings();
 }
 
-// Init
 refresh();
