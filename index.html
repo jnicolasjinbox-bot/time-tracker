@@ -18,6 +18,18 @@
     <button class="header-btn" onclick="handleAdd()">+</button>
   </header>
 
+  <!-- Command Bar -->
+  <div id="command-bar">
+    <div class="command-input-wrap">
+      <input type="text" id="command-input" placeholder="Tell me what to do..." autocomplete="off">
+      <button id="mic-btn" class="mic-btn" onclick="toggleMic()">
+        <span id="mic-icon">🎙️</span>
+      </button>
+      <button class="send-btn" onclick="processCommand()">→</button>
+    </div>
+    <div id="command-preview" class="command-preview"></div>
+  </div>
+
   <main id="main">
     <!-- DASHBOARD -->
     <section id="page-dashboard" class="page active">

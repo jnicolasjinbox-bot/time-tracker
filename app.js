@@ -541,6 +541,332 @@ function renderSettings() {
   ).join('');
 }
 
+// ====== COMMAND BAR & VOICE ======
+let recognition = null;
+let isListening = false;
+let pendingActions = null;
+
+// Speech recognition setup
+if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  recognition = new SR();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onresult = (e) => {
+    let final = '', interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript;
+      else interim += e.results[i][0].transcript;
+    }
+    const input = document.getElementById('command-input');
+    if (final) { input.value = final; processCommand(); }
+    else { input.value = interim; }
+  };
+  recognition.onend = () => { isListening = false; updateMicUI(); };
+  recognition.onerror = () => { isListening = false; updateMicUI(); };
+}
+
+function toggleMic() {
+  if (!recognition) { alert('Voice input not supported in this browser. Try Chrome.'); return; }
+  if (isListening) { recognition.stop(); }
+  else { recognition.start(); isListening = true; }
+  updateMicUI();
+}
+
+function updateMicUI() {
+  const btn = document.getElementById('mic-btn');
+  const icon = document.getElementById('mic-icon');
+  if (isListening) { btn.classList.add('listening'); icon.textContent = '⏺'; }
+  else { btn.classList.remove('listening'); icon.textContent = '🎙️'; }
+}
+
+// Enter key triggers command
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('command-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') processCommand();
+  });
+});
+
+// ====== SMART PARSER ======
+function processCommand() {
+  const input = document.getElementById('command-input').value.trim();
+  if (!input) return;
+
+  const parsed = parseNaturalLanguage(input);
+  if (!parsed.task && !parsed.block) {
+    showPreviewError("I couldn't understand that. Try something like: \"2 hours today on business plan for startup goal\"");
+    return;
+  }
+  pendingActions = parsed;
+  showPreview(parsed);
+}
+
+function parseNaturalLanguage(text) {
+  const lower = text.toLowerCase();
+  const result = { task: null, block: null, goalLink: null, raw: text };
+
+  // ---- Extract duration ----
+  let duration = null;
+  const durMatch = lower.match(/(\d+(?:\.\d+)?)\s*(?:hours?|hrs?|h)\b/) ||
+                   lower.match(/(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)\b/);
+  if (durMatch) {
+    duration = parseFloat(durMatch[1]);
+    if (lower.match(/(\d+)\s*(?:minutes?|mins?|m)\b/)) duration = duration / 60;
+  }
+
+  // ---- Extract date ----
+  let date = today();
+  if (/\btomorrow\b/.test(lower)) {
+    const d = new Date(); d.setDate(d.getDate()+1); date = d.toISOString().slice(0,10);
+  } else if (/\btonight\b/.test(lower) || /\bthis evening\b/.test(lower)) {
+    date = today();
+  }
+  // Match "on monday", "on tuesday", etc
+  const dayNames = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+  const dayMatch = lower.match(/\b(?:on|next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/);
+  if (dayMatch) {
+    const target = dayNames.indexOf(dayMatch[1]);
+    const d = new Date(); d.setHours(12,0,0,0);
+    while (d.getDay() !== target) d.setDate(d.getDate()+1);
+    date = d.toISOString().slice(0,10);
+  }
+
+  // ---- Extract "working until X" / "off at X" / "work ends at X" ----
+  let workEnd = null;
+  const workMatch = lower.match(/(?:working until|work(?:ing)?\s+(?:ends?|finish(?:es)?)\s+(?:at)?|off at|done at|finish(?:ing)? at)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (workMatch) {
+    let h = parseInt(workMatch[1]);
+    const min = workMatch[2] || '00';
+    const ampm = workMatch[3];
+    if (ampm === 'pm' && h < 12) h += 12;
+    if (ampm === 'am' && h === 12) h = 0;
+    if (!ampm && h < 7) h += 12; // assume PM for low numbers
+    workEnd = `${String(h).padStart(2,'0')}:${min}`;
+  }
+
+  // ---- Extract specific time "at 5pm", "from 3 to 5" ----
+  let startTime = null, endTime = null;
+  const fromTo = lower.match(/from\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*(?:to|until|-)\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+  if (fromTo) {
+    let sh = parseInt(fromTo[1]), eh = parseInt(fromTo[4]);
+    if (fromTo[3]==='pm' && sh<12) sh+=12; if (fromTo[3]==='am' && sh===12) sh=0;
+    if (fromTo[6]==='pm' && eh<12) eh+=12; if (fromTo[6]==='am' && eh===12) eh=0;
+    if (!fromTo[3] && !fromTo[6]) { if(sh<7) sh+=12; if(eh<7) eh+=12; if(eh<=sh) eh+=12; }
+    startTime = `${String(sh).padStart(2,'0')}:${fromTo[2]||'00'}`;
+    endTime = `${String(eh).padStart(2,'0')}:${fromTo[5]||'00'}`;
+  } else if (lower.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i) && duration) {
+    const atMatch = lower.match(/\bat\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
+    let h = parseInt(atMatch[1]);
+    if (atMatch[3]==='pm' && h<12) h+=12; if (atMatch[3]==='am' && h===12) h=0;
+    if (!atMatch[3] && h<7) h+=12;
+    startTime = `${String(h).padStart(2,'0')}:${atMatch[2]||'00'}`;
+    const eh = h + Math.ceil(duration);
+    endTime = `${String(eh).padStart(2,'0')}:00`;
+  }
+
+  // If we know work ends and have duration but no start time, schedule right after work
+  if (workEnd && duration && !startTime) {
+    const wh = parseInt(workEnd.split(':')[0]);
+    const wm = parseInt(workEnd.split(':')[1]);
+    startTime = workEnd;
+    const endH = wh + Math.floor(duration);
+    const endM = wm + Math.round((duration % 1) * 60);
+    endTime = `${String(endH + Math.floor(endM/60)).padStart(2,'0')}:${String(endM%60).padStart(2,'0')}`;
+  }
+
+  // ---- Extract goal ----
+  let goalId = null;
+  const goalPatterns = [
+    /(?:part of|for|under|towards?|linked? to)\s+(?:the\s+)?(?:goal\s+)?["""]?(.+?)["""]?\s*(?:goal)?$/i,
+    /(?:goal|for)\s*:?\s*["""]?(.+?)["""]?\s*$/i
+  ];
+  for (const pat of goalPatterns) {
+    const m = lower.match(pat);
+    if (m) {
+      const gName = m[1].trim().replace(/\.$/, '');
+      // Fuzzy match existing goals
+      const found = goals.find(g => g.title.toLowerCase().includes(gName) || gName.includes(g.title.toLowerCase()));
+      if (found) { goalId = found.id; }
+      else {
+        // Check if it matches a category too — might be a new goal
+        goalId = '__new__:' + gName;
+      }
+      break;
+    }
+  }
+
+  // ---- Extract category ----
+  let category = 'Startup'; // default
+  for (const cat of settings.categories) {
+    if (lower.includes(cat.name.toLowerCase())) { category = cat.name; break; }
+  }
+
+  // ---- Extract priority ----
+  let priority = 'Medium';
+  if (/\b(urgent|critical|asap|important|high priority)\b/.test(lower)) priority = 'High';
+  if (/\b(low priority|whenever|no rush|eventually)\b/.test(lower)) priority = 'Low';
+
+  // ---- Extract task title ----
+  // Remove known patterns to get the core task description
+  let title = text
+    .replace(/\d+(\.\d+)?\s*(hours?|hrs?|h|minutes?|mins?|m)\b/gi, '')
+    .replace(/\b(today|tomorrow|tonight|this evening)\b/gi, '')
+    .replace(/\b(on|next|this)\s+(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi, '')
+    .replace(/working until\s+\d{1,2}(:\d{2})?\s*(am|pm)?/gi, '')
+    .replace(/(?:work(?:ing)?\s+(?:ends?|finishes?)\s+(?:at)?|off at|done at|finish(?:ing)? at)\s+\d{1,2}(:\d{2})?\s*(am|pm)?/gi, '')
+    .replace(/from\s+\d{1,2}(:\d{2})?\s*(am|pm)?\s*(?:to|until|-)\s*\d{1,2}(:\d{2})?\s*(am|pm)?/gi, '')
+    .replace(/at\s+\d{1,2}(:\d{2})?\s*(am|pm)?/gi, '')
+    .replace(/(?:part of|for|under|towards?|linked? to)\s+(?:the\s+)?(?:goal\s+)?[""]?.+?[""]?\s*(?:goal)?\s*$/gi, '')
+    .replace(/\b(urgent|critical|asap|important|high priority|low priority|whenever|no rush|eventually)\b/gi, '')
+    .replace(/\b(i am going to need|i need|i want to|i have to|i've got to|i gotta|gonna|going to|need to|want to|have to)\b/gi, '')
+    .replace(/\b(and i'm|and i am|and)\b/gi, '')
+    .replace(/\b(it is|it's|that is|that's)\b/gi, '')
+    .replace(/\b(to|for)\s*$/gi, '')
+    .replace(/,\s*,/g, ',')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s,]+|[\s,]+$/g, '')
+    .trim();
+
+  // Capitalize first letter
+  if (title) title = title.charAt(0).toUpperCase() + title.slice(1);
+  if (!title || title.length < 2) title = 'Untitled task';
+
+  // ---- Build task ----
+  result.task = {
+    title, category, priority,
+    estimated: duration || 0,
+    deadline: date,
+    goalId: goalId && !goalId.startsWith('__new__') ? goalId : '',
+    notes: ''
+  };
+
+  // ---- Build time block if we have timing info ----
+  if (startTime && endTime) {
+    result.block = {
+      date, start: startTime, end: endTime,
+      category, label: title
+    };
+  } else if (duration && !startTime) {
+    // We have duration but no specific time — suggest a block but need to pick a slot
+    const now = new Date();
+    let nextHour = now.getHours() + 1;
+    // If work end is known, start after work
+    if (workEnd) nextHour = parseInt(workEnd);
+    result.block = {
+      date,
+      start: `${String(nextHour).padStart(2,'0')}:00`,
+      end: `${String(nextHour + Math.ceil(duration)).padStart(2,'0')}:00`,
+      category, label: title
+    };
+  }
+
+  // ---- New goal creation ----
+  if (goalId && goalId.startsWith('__new__')) {
+    const gName = goalId.replace('__new__:', '');
+    result.newGoal = {
+      title: gName.charAt(0).toUpperCase() + gName.slice(1),
+      category, targetDate: '', description: ''
+    };
+  }
+
+  return result;
+}
+
+function showPreview(parsed) {
+  const preview = document.getElementById('command-preview');
+  let html = '';
+
+  if (parsed.newGoal) {
+    html += `<div class="preview-card">
+      <div class="preview-type">📌 New Goal</div>
+      <div class="preview-title">${parsed.newGoal.title}</div>
+      <div class="preview-details">Category: ${parsed.newGoal.category}</div>
+    </div>`;
+  }
+
+  if (parsed.task) {
+    const goalName = parsed.task.goalId ? (goals.find(g=>g.id===parsed.task.goalId)||{}).title || '' : parsed.newGoal ? parsed.newGoal.title : '';
+    html += `<div class="preview-card">
+      <div class="preview-type">✅ Task</div>
+      <div class="preview-title">${parsed.task.title}</div>
+      <div class="preview-details">
+        ${parsed.task.category} · ${parsed.task.priority} priority
+        ${parsed.task.estimated ? ` · ${parsed.task.estimated}h` : ''}
+        ${parsed.task.deadline ? ` · ${formatDate(parsed.task.deadline)}` : ''}
+        ${goalName ? ` · Goal: ${goalName}` : ''}
+      </div>
+    </div>`;
+  }
+
+  if (parsed.block) {
+    html += `<div class="preview-card">
+      <div class="preview-type">📅 Time Block</div>
+      <div class="preview-title">${parsed.block.label}</div>
+      <div class="preview-details">${formatDate(parsed.block.date)} · ${parsed.block.start} – ${parsed.block.end} · ${parsed.block.category}</div>
+    </div>`;
+  }
+
+  html += `<div class="preview-actions">
+    <button class="preview-cancel" onclick="cancelPreview()">Cancel</button>
+    <button class="preview-confirm" onclick="confirmCommand()">Confirm ✓</button>
+  </div>`;
+
+  preview.innerHTML = html;
+  preview.classList.add('visible');
+}
+
+function showPreviewError(msg) {
+  const preview = document.getElementById('command-preview');
+  preview.innerHTML = `<div class="preview-card" style="border-color:var(--danger)">
+    <div class="preview-details" style="color:var(--danger)">${msg}</div>
+  </div>`;
+  preview.classList.add('visible');
+  setTimeout(() => preview.classList.remove('visible'), 4000);
+}
+
+function cancelPreview() {
+  pendingActions = null;
+  document.getElementById('command-preview').classList.remove('visible');
+  document.getElementById('command-input').value = '';
+}
+
+function confirmCommand() {
+  if (!pendingActions) return;
+  const p = pendingActions;
+
+  // Create goal if needed
+  let newGoalId = null;
+  if (p.newGoal) {
+    newGoalId = uid();
+    goals.push({ id: newGoalId, ...p.newGoal, createdDate: today() });
+  }
+
+  // Create task
+  if (p.task) {
+    if (newGoalId && !p.task.goalId) p.task.goalId = newGoalId;
+    tasks.push({ id: uid(), ...p.task, completed: false, completedDate: null, createdDate: today() });
+  }
+
+  // Create time block
+  if (p.block) {
+    blocks.push({ id: uid(), ...p.block, taskId: '' });
+  }
+
+  save();
+  pendingActions = null;
+  document.getElementById('command-preview').classList.remove('visible');
+  document.getElementById('command-input').value = '';
+
+  // Quick success flash
+  const bar = document.querySelector('.command-input-wrap');
+  bar.style.borderColor = 'var(--success)';
+  setTimeout(() => bar.style.borderColor = '', 1000);
+
+  refresh();
+}
+
 // ====== REFRESH ======
 function refresh() {
   renderDashboard(); renderTasks(); renderGoals(); renderPlanner(); renderSettings();
