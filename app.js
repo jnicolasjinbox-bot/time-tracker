@@ -547,32 +547,52 @@ let isListening = false;
 let pendingActions = null;
 
 // Speech recognition setup
-if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+function initRecognition() {
+  if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) return null;
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  recognition = new SR();
-  recognition.continuous = false;
-  recognition.interimResults = true;
-  recognition.lang = 'en-US';
+  const r = new SR();
+  r.continuous = false;
+  r.interimResults = true;
+  r.lang = 'en-US';
+  r.maxAlternatives = 1;
 
-  recognition.onresult = (e) => {
+  r.onresult = (e) => {
     let final = '', interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) final += e.results[i][0].transcript;
       else interim += e.results[i][0].transcript;
     }
     const input = document.getElementById('command-input');
-    if (final) { input.value = final; processCommand(); }
-    else { input.value = interim; }
+    if (final) {
+      input.value = final;
+      stopMic();
+    } else {
+      input.value = interim;
+    }
   };
-  recognition.onend = () => { isListening = false; updateMicUI(); };
-  recognition.onerror = () => { isListening = false; updateMicUI(); };
+  r.onend = () => { isListening = false; updateMicUI(); };
+  r.onerror = () => { isListening = false; updateMicUI(); };
+  return r;
+}
+
+function stopMic() {
+  isListening = false;
+  if (recognition) { try { recognition.abort(); } catch(e) {} }
+  recognition = null;
+  updateMicUI();
 }
 
 function toggleMic() {
+  if (isListening) {
+    stopMic();
+    return;
+  }
+  recognition = initRecognition();
   if (!recognition) { alert('Voice input not supported in this browser. Try Chrome.'); return; }
-  if (isListening) { recognition.stop(); }
-  else { recognition.start(); isListening = true; }
+  try { recognition.start(); isListening = true; } catch(e) { isListening = false; }
   updateMicUI();
+  // Safety timeout — force stop after 15 seconds
+  setTimeout(() => { if (isListening) stopMic(); }, 15000);
 }
 
 function updateMicUI() {
