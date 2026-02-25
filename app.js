@@ -505,7 +505,7 @@ function exportData() {
   const data = JSON.stringify({ tasks, goals, blocks, settings }, null, 2);
   const blob = new Blob([data], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'grindtime-'+today()+'.json'; a.click();
+  a.download = 'tracker-'+today()+'.json'; a.click();
 }
 
 function importData(e) {

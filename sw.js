@@ -1,4 +1,4 @@
-const CACHE = 'grindtime-v1';
+const CACHE = 'tracker-v1';
 const ASSETS = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json'];
 
 self.addEventListener('install', e => {
